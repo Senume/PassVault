@@ -1,9 +1,9 @@
-"""Clipboard helpers for PassVault.
+"""Clipboard helpers for PassVault (core).
 
 Provides a small abstraction to copy secrets to the system clipboard and
 clear them after a timeout. It attempts to use the desktop toolchain in
-this order: wl-copy (Wayland), xclip/xsel (X11), then Gtk (if PyGObject
-is available). If none are available it raises RuntimeError.
+this order: wl-copy (Wayland), xclip/xsel (X11). If none are available it
+raises RuntimeError.
 
 This module keeps dependencies minimal by shelling out to existing tools
 commonly present on Linux systems. Clearing is implemented with a
@@ -14,7 +14,6 @@ from __future__ import annotations
 import shutil
 import subprocess
 import threading
-import typing
 
 DEFAULT_CLEAR_SECONDS = 15
 
