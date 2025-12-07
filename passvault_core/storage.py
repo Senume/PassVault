@@ -57,3 +57,35 @@ def open_vault(path: str, master_password: str) -> Dict[str, Any]:
     except DecryptionError:
         raise
     return json.loads(plaintext.decode("utf-8"))
+
+
+def save_vault(path: str, master_password: str, data: Dict[str, Any]) -> None:
+    """Overwrite an existing vault file with updated `data`.
+
+    This function preserves the vault's KDF parameters and salt so the same
+    password continues to work. It generates a fresh nonce for encryption.
+    """
+    # Read existing envelope
+    with open(path, "rb") as f:
+        env = json.load(f)
+
+    # Extract existing kdf params and salt
+    salt = _u8(env["salt"])
+    params = env.get("kdf", {})
+    time = params.get("time", DEFAULT_TIME)
+    memory = params.get("memory", DEFAULT_MEMORY)
+    parallelism = params.get("parallelism", DEFAULT_PARALLELISM)
+
+    # Derive key and encrypt new plaintext
+    key = derive_key(master_password, salt, time, memory, parallelism)
+    plaintext = json.dumps(data, ensure_ascii=False).encode("utf-8")
+    nonce, ciphertext = encrypt(key, plaintext)
+
+    new_env = {
+        "version": env.get("version", 1),
+        "kdf": {"time": time, "memory": memory, "parallelism": parallelism},
+        "salt": _b64(salt),
+        "nonce": _b64(nonce),
+        "ciphertext": _b64(ciphertext),
+    }
+    atomic_write(path, json.dumps(new_env, indent=2).encode("utf-8"), mode=0o600)
