@@ -16,6 +16,7 @@ except Exception:
 
 from passvault_core.storage import open_vault
 from passvault_core.errors import DecryptionError
+from .clipboard import copy_and_clear, ClipboardUnavailable
 
 
 if gi is not None:
@@ -105,14 +106,47 @@ if gi is not None:
                 self.results.set_text("")
                 return
 
-            # Display a short summary of the loaded JSON
+            # Display a short summary of the loaded JSON or render items with copy buttons
             try:
-                if isinstance(data, dict):
-                    keys = ", ".join(sorted(data.keys())) or "(empty)"
-                    self.results.set_text(f"Unlocked — top-level keys: {keys}")
+                if isinstance(data, dict) and data.get("items"):
+                    # Build a simple list of entries with Copy buttons
+                    entries = data.get("items", [])
+                    listbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+                    for it in entries:
+                        name = it.get("name", "(no name)") if isinstance(it, dict) else str(it)
+                        user = it.get("username", "") if isinstance(it, dict) else ""
+                        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+                        lbl = Gtk.Label(label=f"{name} {('<' + user + '>') if user else ''}")
+                        lbl.set_xalign(0)
+                        btn_copy = Gtk.Button(label="Copy")
+                        # capture password value
+                        pw_value = it.get("password", "") if isinstance(it, dict) else ""
+
+                        def make_handler(pw):
+                            def _on_copy(btn):
+                                try:
+                                    copy_and_clear(pw)
+                                    self.status.set_text("Copied to clipboard (will clear shortly)")
+                                except ClipboardUnavailable:
+                                    self.status.set_text("Clipboard not available on this system")
+
+                            return _on_copy
+
+                        btn_copy.connect("clicked", make_handler(pw_value))
+                        row.append(lbl)
+                        row.append(btn_copy)
+                        listbox.append(row)
+
+                    # Replace results area with listbox
+                    self.window.set_child(listbox)
+                    self.status.set_text("Unlocked successfully")
                 else:
-                    self.results.set_text("Unlocked — data loaded (non-dict)")
-                self.status.set_text("Unlocked successfully")
+                    if isinstance(data, dict):
+                        keys = ", ".join(sorted(data.keys())) or "(empty)"
+                        self.results.set_text(f"Unlocked — top-level keys: {keys}")
+                    else:
+                        self.results.set_text("Unlocked — data loaded (non-dict)")
+                    self.status.set_text("Unlocked successfully")
             except Exception:
                 self.results.set_text("Unlocked — (could not render contents)")
                 self.status.set_text("Unlocked successfully")
