@@ -1,0 +1,18 @@
+# Development
+# Data Files
+data/
+logs/
+
+# VSCode settings
+.vscode/
+.pytest_cache/
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+# Python cache files
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.pyd
+**/*.pdb
+**/*.egg-info/
