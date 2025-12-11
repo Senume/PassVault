@@ -19,13 +19,10 @@ from passvault_core.clipboard import (
 )
 
 
-class TestClipboardManagerInitialization:
-    """Tests for ClipboardManager initialization."""
+# Note: Timeout-related tests have been removed as the module now uses
+# manual clearing only with subprocess timeout protection.
 
-    def test_init_default(self):
-        """Test initialization with default settings."""
-        manager = ClipboardManager()
-        assert manager.is_managed() is False
+
 
 
 class TestClipboardCopyAndClear:
@@ -205,19 +202,24 @@ class TestErrorHandling:
 
 
 
+
+
+
+
+
 class TestClipboardCopyAndClear:
     """Tests for copy and clear operations."""
 
     @pytest.fixture
     def manager(self):
         """Provide a ClipboardManager instance."""
-        return ClipboardManager(timeout=1)
+        return ClipboardManager()
 
     @patch("passvault_core.clipboard.ClipboardManager._write_to_clipboard")
     def test_copy_success(self, mock_write, manager):
         """Test successful copy operation."""
         mock_write.return_value = None
-        manager.copy("test_password", auto_clear=False)
+        manager.copy("test_password")
         
         mock_write.assert_called_once_with("test_password")
         assert manager.is_managed() is True
@@ -226,7 +228,7 @@ class TestClipboardCopyAndClear:
     def test_copy_empty_string(self, mock_write, manager):
         """Test that empty string copy raises ValueError."""
         with pytest.raises(ValueError, match="non-empty string"):
-            manager.copy("", auto_clear=False)
+            manager.copy("")
         
         mock_write.assert_not_called()
 
@@ -234,7 +236,7 @@ class TestClipboardCopyAndClear:
     def test_copy_none_raises_error(self, mock_write, manager):
         """Test that None copy raises ValueError."""
         with pytest.raises(ValueError, match="non-empty string"):
-            manager.copy(None, auto_clear=False)
+            manager.copy(None)
         
         mock_write.assert_not_called()
 
@@ -244,7 +246,7 @@ class TestClipboardCopyAndClear:
         mock_write.side_effect = Exception("Write failed")
         
         with pytest.raises(ClipboardError):
-            manager.copy("password", auto_clear=False)
+            manager.copy("password")
         
         assert manager.is_managed() is False
 
@@ -252,7 +254,7 @@ class TestClipboardCopyAndClear:
     def test_clear_success(self, mock_write, manager):
         """Test successful clear operation."""
         mock_write.return_value = None
-        manager.copy("password", auto_clear=False)
+        manager.copy("password")
         assert manager.is_managed() is True
         
         manager.clear()
@@ -271,83 +273,13 @@ class TestClipboardCopyAndClear:
             manager.clear()
 
 
-class TestClipboardTimeout:
-    """Tests for timeout functionality."""
-
-    @pytest.fixture
-    def manager(self):
-        """Provide a ClipboardManager instance with short timeout."""
-        return ClipboardManager(timeout=1)
-
-    @patch("passvault_core.clipboard.ClipboardManager._write_to_clipboard")
-    def test_auto_clear_after_timeout(self, mock_write, manager):
-        """Test that clipboard is cleared after timeout."""
-        mock_write.return_value = None
-        manager.copy("password", auto_clear=True)
-        assert manager.is_managed() is True
-        
-        # Wait for timeout to expire
-        time.sleep(1.5)
-        
-        assert manager.is_managed() is False
-        # Should be called: copy + auto_clear
-        assert mock_write.call_count == 2
-
-    @patch("passvault_core.clipboard.ClipboardManager._write_to_clipboard")
-    def test_manual_clear_cancels_timer(self, mock_write, manager):
-        """Test that manual clear cancels the timer."""
-        mock_write.return_value = None
-        manager.copy("password", auto_clear=True)
-        
-        # Manually clear before timeout
-        time.sleep(0.5)
-        manager.clear()
-        
-        # Wait to ensure timer doesn't fire
-        time.sleep(1)
-        
-        # Should be called: copy + manual clear (no auto_clear)
-        assert mock_write.call_count == 2
-
-    @patch("passvault_core.clipboard.ClipboardManager._write_to_clipboard")
-    def test_get_remaining_time_active(self, mock_write, manager):
-        """Test getting remaining time when timer is active."""
-        mock_write.return_value = None
-        manager.copy("password", auto_clear=True)
-        
-        remaining = manager.get_remaining_time()
-        assert remaining == manager.timeout
-
-    @patch("passvault_core.clipboard.ClipboardManager._write_to_clipboard")
-    def test_get_remaining_time_inactive(self, mock_write, manager):
-        """Test getting remaining time when timer is inactive."""
-        remaining = manager.get_remaining_time()
-        assert remaining is None
-
-    @patch("passvault_core.clipboard.ClipboardManager._write_to_clipboard")
-    def test_set_timeout_updates_value(self, mock_write, manager):
-        """Test that set_timeout updates the timeout value."""
-        manager.set_timeout(60)
-        assert manager.timeout == 60
-
-    def test_set_timeout_invalid_zero(self, manager):
-        """Test that set_timeout with zero raises ValueError."""
-        with pytest.raises(ValueError, match="positive integer"):
-            manager.set_timeout(0)
-
-    def test_set_timeout_invalid_negative(self, manager):
-        """Test that set_timeout with negative raises ValueError."""
-        with pytest.raises(ValueError, match="positive integer"):
-            manager.set_timeout(-10)
-
-
 class TestContextManager:
     """Tests for context manager functionality."""
 
     @pytest.fixture
     def manager(self):
         """Provide a ClipboardManager instance."""
-        return ClipboardManager(timeout=10)
+        return ClipboardManager()
 
     @patch("passvault_core.clipboard.ClipboardManager._write_to_clipboard")
     def test_temporary_copy_context(self, mock_write, manager):
@@ -360,19 +292,6 @@ class TestContextManager:
         
         # After context, clipboard should be cleared
         assert manager.is_managed() is False
-
-    @patch("passvault_core.clipboard.ClipboardManager._write_to_clipboard")
-    def test_temporary_copy_custom_timeout(self, mock_write, manager):
-        """Test temporary_copy with custom timeout."""
-        mock_write.return_value = None
-        original_timeout = manager.timeout
-        
-        with manager.temporary_copy("secret", timeout=5):
-            # Timeout should be changed inside context
-            pass
-        
-        # Timeout should be restored after context
-        assert manager.timeout == original_timeout
 
     @patch("passvault_core.clipboard.ClipboardManager._write_to_clipboard")
     def test_temporary_copy_clears_on_exception(self, mock_write, manager):
@@ -402,15 +321,6 @@ class TestGlobalManager:
         
         assert manager1 is manager2
 
-    @patch("passvault_core.clipboard.ClipboardManager._write_to_clipboard")
-    def test_copy_with_timeout_convenience(self, mock_write):
-        """Test copy_with_timeout convenience function."""
-        mock_write.return_value = None
-        
-        copy_with_timeout("password", timeout=45)
-        
-        mock_write.assert_called_with("password")
-
 
 class TestThreadSafety:
     """Tests for thread safety."""
@@ -418,7 +328,7 @@ class TestThreadSafety:
     @pytest.fixture
     def manager(self):
         """Provide a ClipboardManager instance."""
-        return ClipboardManager(timeout=10)
+        return ClipboardManager()
 
     @patch("passvault_core.clipboard.ClipboardManager._write_to_clipboard")
     def test_concurrent_copy_operations(self, mock_write, manager):
@@ -428,7 +338,7 @@ class TestThreadSafety:
         
         def copy_operation(text):
             try:
-                manager.copy(text, auto_clear=False)
+                manager.copy(text)
             except Exception as e:
                 errors.append(e)
         
@@ -451,7 +361,7 @@ class TestErrorHandling:
     @pytest.fixture
     def manager(self):
         """Provide a ClipboardManager instance."""
-        return ClipboardManager(timeout=10)
+        return ClipboardManager()
 
     @patch("passvault_core.clipboard.subprocess.Popen")
     def test_xclip_not_found(self, mock_popen, manager):
@@ -459,7 +369,7 @@ class TestErrorHandling:
         mock_popen.side_effect = FileNotFoundError("xclip not found")
         
         with pytest.raises(ClipboardError, match="xclip not found"):
-            manager.copy("password", auto_clear=False)
+            manager.copy("password")
 
     @patch("passvault_core.clipboard.subprocess.Popen")
     def test_xclip_command_fails(self, mock_popen, manager):
@@ -470,4 +380,4 @@ class TestErrorHandling:
         mock_popen.return_value = mock_process
         
         with pytest.raises(ClipboardError, match="xclip failed"):
-            manager.copy("password", auto_clear=False)
+            manager.copy("password")
