@@ -1,8 +1,19 @@
-import os,json, base64, tempfile
+import os
+import json
+import base64
+import tempfile
 from passvault_core.crypto import derive_key, encrypt, decrypt
-from passvault_core.storage import encode_string_to_base64_bytes, decode_base64_bytes_to_string
-
 from passvault_core.schema import VaultSchema, KDFParamsSchema, PointerSchema, CredentialSchema
+
+
+def encode_string_to_base64_bytes(s: str) -> bytes:
+    """Encode a string to base64 bytes."""
+    return base64.b64encode(s.encode("utf-8"))
+
+
+def decode_base64_bytes_to_string(b: bytes) -> str:
+    """Decode base64 bytes to a string."""
+    return base64.b64decode(b).decode("utf-8")
 
 
 class Vault:
