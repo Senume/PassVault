@@ -2,6 +2,7 @@
 # Data Files
 data/
 logs/
+references/
 
 # VSCode settings
 .vscode/
