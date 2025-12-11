@@ -1,91 +1,103 @@
-import os
-import json
-import base64
-from typing import Any, Dict
-from .crypto import derive_key, encrypt, decrypt, DEFAULT_TIME, DEFAULT_MEMORY, DEFAULT_PARALLELISM
-from .utils import atomic_write
-from .errors import DecryptionError
+import os,json, base64, tempfile
+from passvault_core.crypto import derive_key, encrypt, decrypt
+from passvault_core.storage import encode_string_to_base64_bytes, decode_base64_bytes_to_string
+
+from passvault_core.schema import VaultSchema, KDFParamsSchema, PointerSchema, CredentialSchema
 
 
-def _b64(x: bytes) -> str:
-    return base64.b64encode(x).decode("ascii")
+class Vault:
+
+    path = 'data'
+
+    def __init__(self, id: str, TIME: int = None, MEMORY: int = None, PARALLELISM: int = None, load: bool = True):
+        vault_config: VaultSchema = VaultSchema(id=id, salt=os.urandom(32))
+
+        if TIME is not None and MEMORY is not None and PARALLELISM is not None:
+            vault_config.kdf_params = KDFParamsSchema(time_cost=TIME, memory_cost=MEMORY, parallelism=PARALLELISM)
+        self.vault_config = vault_config
+
+        # auto-load existing vault config if requested and file exists
+        if load:
+            cfg_path = os.path.join(Vault.path, id, "vault_config.json")
+            if os.path.exists(cfg_path):
+                self.load(id)
+
+    def load(self, id):
+        path = os.path.join(Vault.path, id, "vault_config.json")
+        with open(path, "r", encoding="utf-8") as f:
+            vault_data = json.load(f)
+
+        def _decode_bytes(obj):
+            if isinstance(obj, dict):
+                out = {}
+                for k, v in obj.items():
+                    if k in ("salt", "nonce") and isinstance(v, str):
+                        out[k] = base64.b64decode(v.encode("ascii"))
+                    else:
+                        out[k] = _decode_bytes(v)
+                return out
+            if isinstance(obj, list):
+                return [_decode_bytes(x) for x in obj]
+            return obj
+
+        vault_data = _decode_bytes(vault_data)
+        self.vault_config = VaultSchema.from_dict(vault_data)
 
 
-def _u8(s: str) -> bytes:
-    return base64.b64decode(s.encode("ascii"))
+    def update_vault(self):
+        path = os.path.join(Vault.path, self.vault_config.id, "vault_config.json")
+
+        def _encode_bytes(obj):
+            if isinstance(obj, bytes):
+                return base64.b64encode(obj).decode("ascii")
+            if isinstance(obj, dict):
+                return {k: _encode_bytes(v) for k, v in obj.items()}
+            if isinstance(obj, list):
+                return [_encode_bytes(x) for x in obj]
+            return obj
+
+        plain = self.vault_config.to_dict()
+        serializable = _encode_bytes(plain)
+        json_bytes = json.dumps(serializable, indent=2).encode("utf-8")
+        Vault.atomic_write_bytes(path, json_bytes)
 
 
-def create_vault(path: str, master_password: str, initial_data: Dict[str, Any] = None, *, time: int = DEFAULT_TIME, memory: int = DEFAULT_MEMORY, parallelism: int = DEFAULT_PARALLELISM) -> None:
-    """Create a new encrypted vault file containing `initial_data` (dict).
+    def updated_pointer(self, master_password: str, pointer_id: str, username: str, password: str):
+        
+        if any([p.id for p in self.vault_config.encrypted_pointers if p.id == pointer_id]):
+            raise ValueError(f"Pointer with id {pointer_id} already exists in vault {self.vault_config.id}")
+        credentials = CredentialSchema(password=password, username=username)
+        master_hash_key = derive_key(password=master_password, salt=self.vault_config.salt, **self.vault_config.kdf_params.to_dict())
+        nonce, encrypted_data = encrypt(key=master_hash_key, plaintext=encode_string_to_base64_bytes(credentials.to_str()))
 
-    The vault is written as a JSON envelope with base64 fields. File perms are set to 0o600.
-    """
-    if initial_data is None:
-        initial_data = {}
-    salt = os.urandom(16)
-    key = derive_key(master_password, salt, time, memory, parallelism)
-    plaintext = json.dumps(initial_data, ensure_ascii=False).encode("utf-8")
-    nonce, ciphertext = encrypt(key, plaintext)
-    env = {
-        "version": 1,
-        "kdf": {"time": time, "memory": memory, "parallelism": parallelism},
-        "salt": _b64(salt),
-        "nonce": _b64(nonce),
-        "ciphertext": _b64(ciphertext),
-    }
-    data = json.dumps(env, indent=2).encode("utf-8")
-    atomic_write(path, data, mode=0o600)
+        Vault.atomic_write_bytes(os.path.join(Vault.path, self.vault_config.id, f"{pointer_id}.ptr"), encrypted_data)
+        pointer = PointerSchema(id=pointer_id, vault_id=self.vault_config.id, nonce=nonce)
+        self.vault_config.encrypted_pointers.append(pointer)
+    
+    def get_pointer(self, master_password: str, pointer_id: str) -> CredentialSchema:
+        pointer = next((p for p in self.vault_config.encrypted_pointers if p.id == pointer_id), None)
+        if pointer is None:
+            raise ValueError(f"Pointer with id {pointer_id} does not exist in vault {self.vault_config.id}")
+        with open(os.path.join(Vault.path, self.vault_config.id, f"{pointer_id}.ptr"), "rb") as f:
+            encrypted_data = f.read()
+        master_hash_key = derive_key(password=master_password, salt=self.vault_config.salt, **self.vault_config.kdf_params.to_dict())
+        decrypted_data = decrypt(key=master_hash_key, nonce=pointer.nonce, ciphertext=encrypted_data)
+        credentials_str = decode_base64_bytes_to_string(decrypted_data)
+        credentials = CredentialSchema.from_str(data=credentials_str)
+        return credentials
+    
 
-
-def open_vault(path: str, master_password: str) -> Dict[str, Any]:
-    """Open and decrypt a vault file. Returns the stored JSON object (dict).
-
-    Raises DecryptionError if auth fails.
-    """
-    with open(path, "rb") as f:
-        env = json.load(f)
-    salt = _u8(env["salt"])
-    params = env.get("kdf", {})
-    time = params.get("time", DEFAULT_TIME)
-    memory = params.get("memory", DEFAULT_MEMORY)
-    parallelism = params.get("parallelism", DEFAULT_PARALLELISM)
-    key = derive_key(master_password, salt, time, memory, parallelism)
-    nonce = _u8(env["nonce"])
-    ciphertext = _u8(env["ciphertext"])
-    try:
-        plaintext = decrypt(key, nonce, ciphertext)
-    except DecryptionError:
-        raise
-    return json.loads(plaintext.decode("utf-8"))
-
-
-def save_vault(path: str, master_password: str, data: Dict[str, Any]) -> None:
-    """Overwrite an existing vault file with updated `data`.
-
-    This function preserves the vault's KDF parameters and salt so the same
-    password continues to work. It generates a fresh nonce for encryption.
-    """
-    # Read existing envelope
-    with open(path, "rb") as f:
-        env = json.load(f)
-
-    # Extract existing kdf params and salt
-    salt = _u8(env["salt"])
-    params = env.get("kdf", {})
-    time = params.get("time", DEFAULT_TIME)
-    memory = params.get("memory", DEFAULT_MEMORY)
-    parallelism = params.get("parallelism", DEFAULT_PARALLELISM)
-
-    # Derive key and encrypt new plaintext
-    key = derive_key(master_password, salt, time, memory, parallelism)
-    plaintext = json.dumps(data, ensure_ascii=False).encode("utf-8")
-    nonce, ciphertext = encrypt(key, plaintext)
-
-    new_env = {
-        "version": env.get("version", 1),
-        "kdf": {"time": time, "memory": memory, "parallelism": parallelism},
-        "salt": _b64(salt),
-        "nonce": _b64(nonce),
-        "ciphertext": _b64(ciphertext),
-    }
-    atomic_write(path, json.dumps(new_env, indent=2).encode("utf-8"), mode=0o600)
+    def list_pointers(self) -> list[str]:
+        return [p.id for p in self.vault_config.encrypted_pointers]
+    
+    @staticmethod
+    def list_vaults() -> list[str]:
+        return os.listdir(Vault.path)
+    
+    @classmethod
+    def atomic_write_bytes(cls, path: str, data: bytes):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with tempfile.NamedTemporaryFile(dir=os.path.dirname(path), delete=False) as tf:
+            tf.write(data)
+            tmp = tf.name
+        os.replace(tmp, path)
