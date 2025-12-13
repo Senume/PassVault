@@ -3,6 +3,8 @@
 data/
 logs/
 references/
+#logs
+*.log
 
 # VSCode settings
 .vscode/

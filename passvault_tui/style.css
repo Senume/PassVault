@@ -1,0 +1,91 @@
+Screen {
+    align: center middle;
+}
+#vault-selector {
+    border: solid $primary;
+    background: transparent;
+    content-align: center top;
+    color: $text;
+    width: 50%;
+    margin: 1 2;
+}
+
+#vault-selector>SelectCurrent {
+    background: transparent;
+    color: $text;
+}
+
+#vault-selector:focus {
+    border: solid $accent;
+    background: transparent;
+}
+
+#vault-selector OptionList {
+    background: transparent;
+    color: $text;
+    border: solid $accent;
+}
+
+#pointers-list {
+    border: solid $primary;
+    background: transparent;
+    color: $text;
+    width: 50%;
+    height: 50%;
+    content-align: center middle;
+}
+
+#pointers-list>Option {
+    background: $panel;
+    color: $text;
+    padding: 1 2;
+    text-style: bold;
+}
+
+#pointers-list>Option:hover {
+    background: transparent;
+    color: $accent;
+}
+
+#pointers-list>Option.highlighted {
+    background: transparent;
+    color: $accent;
+    text-style: bold;
+}
+
+.pointer_item {
+    text-style: bold;
+    color: $text;
+}
+
+#password-modal {
+    align: center middle;
+    border: solid $primary;
+    background: $boost;
+    layer: overlay;
+    width: 50;
+    height: 11;
+    padding: 1 2;
+}
+
+#password-panel {
+    width: 100%;
+    height: 100%;
+}
+
+#password-label {
+    text-style: bold;
+    color: $text;
+    margin-bottom: 1;
+}
+
+#master-password-input {
+    margin: 1 0;
+}
+
+#password-error {
+    color: $error;
+    text-style: bold;
+    margin-top: 1;
+    height: 1;
+}
