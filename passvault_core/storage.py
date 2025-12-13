@@ -18,7 +18,7 @@ def decode_base64_bytes_to_string(b: bytes) -> str:
 
 class Vault:
 
-    path = 'data'
+    path = os.getenv("PASSVAULT", "data")
 
     def __init__(self, id: str, TIME: int = None, MEMORY: int = None, PARALLELISM: int = None, load: bool = True):
         vault_config: VaultSchema = VaultSchema(id=id, salt=os.urandom(32))
