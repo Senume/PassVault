@@ -4,39 +4,70 @@ from textual.app import ComposeResult, App
 from textual.containers import Vertical, Horizontal
 from textual.widgets import Header, Footer, Label, Button, Select, OptionList, Static, Input
 from textual.message import Message
-from textual.widgets.option_list import Option
+from textual.widgets. option_list import Option
 
+from passvault_core.clipboard import get_clipboard_manager
 from passvault_core.storage import Vault
 from utils import logger
 
-class CredentialPanel(Static):
-    """Panel to display credential details."""
+class CredentialPanel(Vertical):
+    """Panel to display credential details - uses Vertical for focusability."""
+    
+    # Ensure the container can receive focus
+    can_focus = True
     
     BINDINGS = [
         ("escape", "close_panel", "Close"),
+        ("c", "copy_credentials", "Copy Username"),
+        ("p", "copy_password", "Copy Password"),
     ]
 
-
-    def __init__(self, username: str = "", password: str = "", **kwargs):
+    def __init__(self, username: str = "", password: str = "", pointer_id: str = "", **kwargs):
         super().__init__(**kwargs)
         self.username = username
         self.password = password
-    
+        self.pointer_id = pointer_id
     def on_mount(self) -> None:
         """Update display with data on mount."""
-        self.query_one("#credential-username", Static).update(f"Username: {self.username}")
-        self.query_one("#credential-password", Static).update(f"Password: {self.password}")
+
+        # Set focus on the panel so key bindings work
+        self.focus()
+        logger.debug("Credential panel mounted and focused")
 
     
     def compose(self) -> ComposeResult:
-        with Vertical(id="credential-panel"):
-            yield Label("Credential Details", id="credential-label")
-            yield Static("", id="credential-username")
-            yield Static("", id="credential-password")
+        yield Label(f"Credential Details - Unlocked", id="credential-label")
+        yield Label(f"Id - {self.pointer_id}\n", id="pointer-label")
+        yield Label("\[c] Copy Username \n\[p] Copy Password \n\[ESC] Close", id="credential-help")
 
     def action_close_panel(self) -> None:
         """Close the credential panel."""
+        logger.debug("action_close_panel called")
         self.post_message(self.CredentialClosed())
+
+    def action_copy_credentials(self) -> None:
+        """Copy username to clipboard."""
+        logger.debug("action_copy_credentials called")
+        try:
+            clipboard_manager = get_clipboard_manager()
+            clipboard_manager.copy(self.username)
+            logger.info(f"Copied username to clipboard")
+            self.app.notify("Username copied to clipboard")
+        except Exception as e:
+            logger.error(f"Failed to copy username: {e}")
+            self.app.notify(f"Failed to copy: {e}", severity="error")
+
+    def action_copy_password(self) -> None:
+        """Copy password to clipboard."""
+        logger.debug("action_copy_password called")
+        try:
+            clipboard_manager = get_clipboard_manager()
+            clipboard_manager.copy(self.password)
+            logger.info(f"Copied password to clipboard")
+            self.app.notify("Password copied to clipboard")
+        except Exception as e:
+            logger.error(f"Failed to copy password:  {e}")
+            self.app.notify(f"Failed to copy: {e}", severity="error")
 
     class CredentialClosed(Message):
         """Message when credential panel is closed."""
@@ -66,12 +97,12 @@ class MasterPasswordPanel(Static):
         if event.control.id == "master-password-input":
             logger.debug("Input submitted via Enter")
             password = event.value
-            logger.debug(f"Password entered: {len(password)} chars")
-            self.post_message(self.PasswordConfirmed(password))
+            logger. debug(f"Password entered: {len(password)} chars")
+            self.post_message(self. PasswordConfirmed(password))
 
     def action_cancel_password(self) -> None:
         """Cancel password entry."""
-        self.post_message(self.PasswordCancelled())
+        self.post_message(self. PasswordCancelled())
 
     class PasswordConfirmed(Message):
         """Message when password is confirmed."""
@@ -90,7 +121,7 @@ class PassVaultApp(App):
     SUB_TITLE = "A Simple TUI Password Manager"
     CSS_PATH = "style.css"
     
-    vaults_list = Vault.list_vaults()
+    vaults_list = Vault. list_vaults()
     current_vault = None
 
     BINDINGS = [
@@ -122,31 +153,29 @@ class PassVaultApp(App):
     def on_select_changed(self, event: Select.Changed) -> None:
         """Handle vault selection."""
         # If this is the vault selector
-        if event.control.id == "vault-selector":
+        if event. control.id == "vault-selector":
             self.query_one("#vault-selector", Select).display = False
-            self.sub_title = f"Selected Vault: {event.value}"
+            self.sub_title = f"Selected Vault:  {event.value}"
             
             # Initialize vault and load pointers
             self.current_vault = Vault(id=event.value)
-            pointers = self.current_vault.list_pointers()
+            pointers = self. current_vault.list_pointers()
             
             # Update pointers list with OptionList
             pointers_list = self.query_one("#pointers-list", OptionList)
             pointers_list.clear_options()
             
             for pointer in pointers:
-                pointers_list.add_option(Option(pointer, id=pointer))
+                pointers_list. add_option(Option(pointer, id=pointer))
             
             pointers_list.display = True
             self.set_focus(pointers_list)
 
-    def on_master_password_panel_password_confirmed(self, message: MasterPasswordPanel.PasswordConfirmed) -> None:
+    def on_master_password_panel_password_confirmed(self, message:  MasterPasswordPanel.PasswordConfirmed) -> None:
         """Handle password confirmation."""
         try:
             credential = self.current_vault.get_pointer(message.password, self.selected_pointer)
-            logger.debug(f"Master credential for pointer {message.password}")
-            self.sub_title = f"Username: {credential.username}"
-            self.sub_title = f": {credential.password}"
+            logger.debug(f"Retrieved credential for pointer {self.selected_pointer}")
             self.query_one("#password-modal", MasterPasswordPanel).remove()
             
             # Display credential details panel
@@ -154,10 +183,12 @@ class PassVaultApp(App):
             self.mount(CredentialPanel(
                 username=credential.username,
                 password=credential.password,
+                pointer_id =self.selected_pointer,
                 id="credential-modal"
             ))
 
-        except Exception as e:
+        except Exception as e: 
+            logger.error(f"Failed to retrieve credential: {e}")
             error_label = self.query_one("#password-error", Static)
             error_label.update("Wrong password")
 
@@ -166,9 +197,17 @@ class PassVaultApp(App):
         self.query_one("#password-modal", MasterPasswordPanel).remove()
         # Re-enable the OptionList
         self.query_one("#pointers-list", OptionList).disabled = False
+        self. set_focus(self.query_one("#pointers-list", OptionList))
+
+    def on_credential_panel_credential_closed(self, message: CredentialPanel. CredentialClosed) -> None:
+        """Handle credential closure."""
+        logger.debug("Credential panel close message received")
+        self.query_one("#credential-modal", CredentialPanel).remove()
+        # Re-enable the OptionList
+        self.query_one("#pointers-list", OptionList).disabled = False
         self.set_focus(self.query_one("#pointers-list", OptionList))
 
-    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+    def on_option_list_option_selected(self, event: OptionList. OptionSelected) -> None:
         """Handle pointer selection and show master password panel."""
         self.selected_pointer = event.option.id
         
@@ -177,7 +216,7 @@ class PassVaultApp(App):
         pointers_list.disabled = True
         
         # Remove existing modal if present
-        try:
+        try: 
             self.query_one("#password-modal", MasterPasswordPanel).remove()
         except:
             pass

@@ -89,3 +89,13 @@ Screen {
     margin-top: 1;
     height: 1;
 }
+
+#credential-modal {
+    align: center middle;
+    border: solid $primary;
+    background: $boost;
+    layer: overlay;
+    width: 50;
+    height: 11;
+    padding: 1 2;
+}
