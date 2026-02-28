@@ -12,7 +12,7 @@ from textual import work
 
 import httpx
 
-from passvault_core.clipboard import get_clipboard_manager
+from passvault_core.clipboard import get_clipboard_manager, ClipboardManager
 from passvault_core.storage import Vault
 from utils import logger
 
@@ -510,7 +510,19 @@ class PassVaultApp(App):
             self.set_focus(search)
 
     def on_key(self, event) -> None:
-        """Handle Escape for the vault selector and search input."""
+        """Handle global key events: paste (Ctrl+V) and Escape."""
+        if event.key == "ctrl+v":
+            focused = self.focused
+            if isinstance(focused, Input):
+                try:
+                    text = ClipboardManager._read_from_clipboard()
+                    if text:
+                        focused.insert_text_at_cursor(text)
+                        event.stop()
+                except Exception as e:
+                    logger.warning(f"Paste failed: {e}")
+            return
+
         if event.key == "escape":
             # Hide vault selector if it is visible
             try:
