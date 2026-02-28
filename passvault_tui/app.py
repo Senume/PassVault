@@ -1,5 +1,8 @@
 """Main TUI application using Textual."""
 
+import os
+import zipfile
+import shutil
 from textual.app import ComposeResult, App
 from textual.containers import Vertical, Horizontal
 from textual.widgets import Header, Footer, Label, Button, Select, OptionList, Static, Input, Rule
@@ -303,6 +306,116 @@ class AddCredentialPanel(Vertical):
             self.password = password
             super().__init__()
 
+
+class ExportVaultPanel(Vertical):
+    """Panel to export the current vault as an encrypted zip archive."""
+
+    can_focus = True
+
+    BINDINGS = [("escape", "cancel", "Cancel")]
+
+    def __init__(self, vault_id: str, vault_path: str, **kwargs):
+        self.vault_id = vault_id
+        self.vault_path = vault_path
+        super().__init__(**kwargs)
+
+    def compose(self) -> ComposeResult:
+        default_dest = os.path.join(os.path.expanduser("~"), "PassVault_exports", f"{self.vault_id}.pvault")
+        with Vertical(id="export-vault-inner"):
+            yield Label("Export Vault", id="export-vault-label")
+            yield Label(f"Vault: [bold]{self.vault_id}[/bold]", id="export-vault-name")
+            yield Label("Export path:", id="export-path-label")
+            yield Input(id="export-path-input", value=default_dest)
+            yield Static("", id="export-vault-error")
+            yield Static("\[[bold cyan]Enter[/]] Export  \[[bold cyan]Esc[/]] Cancel", id="export-vault-hint")
+
+    def on_mount(self) -> None:
+        self.query_one("#export-path-input", Input).focus()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        self._do_export()
+
+    def _do_export(self) -> None:
+        dest = self.query_one("#export-path-input", Input).value.strip()
+        error = self.query_one("#export-vault-error", Static)
+        if not dest:
+            error.update("Export path cannot be empty")
+            return
+        try:
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            with zipfile.ZipFile(dest, "w", zipfile.ZIP_DEFLATED) as zf:
+                for fname in os.listdir(self.vault_path):
+                    zf.write(os.path.join(self.vault_path, fname), arcname=os.path.join(self.vault_id, fname))
+            logger.info(f"Vault '{self.vault_id}' exported to {dest}")
+            self.post_message(self.ExportDone(dest=dest))
+        except Exception as e:
+            logger.error(f"Export failed: {e}")
+            error.update(f"Export failed: {e}")
+
+    def action_cancel(self) -> None:
+        self.remove()
+
+    class ExportDone(Message):
+        def __init__(self, dest: str) -> None:
+            self.dest = dest
+            super().__init__()
+
+
+class ImportVaultPanel(Vertical):
+    """Panel to import a vault from a .pvault zip archive."""
+
+    can_focus = True
+
+    BINDINGS = [("escape", "cancel", "Cancel")]
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="import-vault-inner"):
+            yield Label("Import Vault", id="import-vault-label")
+            yield Label("Path to .pvault file:", id="import-path-label")
+            yield Input(id="import-path-input", placeholder="e.g. ~/PassVault_exports/myvault.pvault")
+            yield Static("", id="import-vault-error")
+            yield Static("\[[bold cyan]Enter[/]] Import  \[[bold cyan]Esc[/]] Cancel", id="import-vault-hint")
+
+    def on_mount(self) -> None:
+        self.query_one("#import-path-input", Input).focus()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        self._do_import()
+
+    def _do_import(self) -> None:
+        src = os.path.expanduser(self.query_one("#import-path-input", Input).value.strip())
+        error = self.query_one("#import-vault-error", Static)
+        if not src:
+            error.update("File path cannot be empty")
+            return
+        if not os.path.isfile(src):
+            error.update(f"File not found: {src}")
+            return
+        try:
+            with zipfile.ZipFile(src, "r") as zf:
+                # Determine vault_id from the top-level directory inside the zip
+                names = zf.namelist()
+                vault_id = names[0].split("/")[0]
+                dest_dir = os.path.join(Vault.path, vault_id)
+                if os.path.exists(dest_dir):
+                    error.update(f"Vault '{vault_id}' already exists")
+                    return
+                zf.extractall(Vault.path)
+            logger.info(f"Vault '{vault_id}' imported from {src}")
+            self.post_message(self.ImportDone(vault_id=vault_id))
+        except Exception as e:
+            logger.error(f"Import failed: {e}")
+            error.update(f"Import failed: {e}")
+
+    def action_cancel(self) -> None:
+        self.remove()
+
+    class ImportDone(Message):
+        def __init__(self, vault_id: str) -> None:
+            self.vault_id = vault_id
+            super().__init__()
+
+
 class PassVaultApp(App):
     """Main PassVault TUI application."""
 
@@ -320,6 +433,8 @@ class PassVaultApp(App):
         ("n", "new_vault", "New Vault (N)"),
         ("g", "add_credential", "Add Credential (G)"),
         ("f", "focus_search", "Search (F)"),
+        ("e", "export_vault", "Export Vault (E)"),
+        ("i", "import_vault", "Import Vault (I)"),
     ]
 
     def compose(self) -> ComposeResult:
@@ -347,6 +462,46 @@ class PassVaultApp(App):
         except Exception:
             pass
         self.mount(AddVaultPanel(id="add-vault-modal"))
+
+    def action_export_vault(self) -> None:
+        """Export the currently loaded vault as an encrypted zip archive."""
+        if self.current_vault is None:
+            self.notify("Select a vault first", severity="warning")
+            return
+        vault_id = self.current_vault.vault_config.id
+        vault_path = os.path.join(Vault.path, vault_id)
+        try:
+            self.query_one("#export-vault-modal", ExportVaultPanel).remove()
+        except Exception:
+            pass
+        self.mount(ExportVaultPanel(vault_id=vault_id, vault_path=vault_path, id="export-vault-modal"))
+
+    def on_export_vault_panel_export_done(self, message: ExportVaultPanel.ExportDone) -> None:
+        try:
+            self.query_one("#export-vault-modal", ExportVaultPanel).remove()
+        except Exception:
+            pass
+        self.notify(f"Vault exported → {message.dest}")
+
+    def action_import_vault(self) -> None:
+        """Import a vault from a .pvault zip archive."""
+        try:
+            self.query_one("#import-vault-modal", ImportVaultPanel).remove()
+        except Exception:
+            pass
+        self.mount(ImportVaultPanel(id="import-vault-modal"))
+
+    def on_import_vault_panel_import_done(self, message: ImportVaultPanel.ImportDone) -> None:
+        try:
+            self.query_one("#import-vault-modal", ImportVaultPanel).remove()
+        except Exception:
+            pass
+        updated = Vault.list_vaults()
+        self.query_one("#vault-selector", Select).set_options(
+            (v, v) for v in updated
+        )
+        self.notify(f"Vault '{message.vault_id}' imported ✓")
+        logger.info(f"Vault '{message.vault_id}' imported and selector refreshed")
 
     def action_focus_search(self) -> None:
         """Focus the search input if a vault is loaded."""
