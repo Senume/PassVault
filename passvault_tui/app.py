@@ -114,6 +114,69 @@ class MasterPasswordPanel(Static):
         """Message when password entry is cancelled."""
         pass
 
+class AddVaultPanel(Vertical):
+    """Panel for creating a new vault with master password confirmation."""
+
+    can_focus = True
+
+    BINDINGS = [
+        ("escape", "cancel", "Cancel"),
+    ]
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="add-vault-inner"):
+            yield Label("Create New Vault", id="add-vault-label")
+            yield Label("Vault Name:", id="vault-name-label")
+            yield Input(id="new-vault-name-input", placeholder="Enter vault name")
+            yield Label("Master Password:", id="vault-master-password-label")
+            yield Input(id="new-vault-password-input", placeholder="Enter master password", password=True)
+            yield Label("Confirm Password:", id="vault-confirm-label")
+            yield Input(id="new-vault-confirm-input", placeholder="Confirm master password", password=True)
+            yield Static("", id="add-vault-error")
+
+    def on_mount(self) -> None:
+        self.query_one("#new-vault-name-input", Input).focus()
+        logger.debug("AddVaultPanel mounted")
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.control.id == "new-vault-name-input":
+            self.query_one("#new-vault-password-input", Input).focus()
+        elif event.control.id == "new-vault-password-input":
+            self.query_one("#new-vault-confirm-input", Input).focus()
+        elif event.control.id == "new-vault-confirm-input":
+            self._submit()
+
+    def _submit(self) -> None:
+        name = self.query_one("#new-vault-name-input", Input).value.strip()
+        password = self.query_one("#new-vault-password-input", Input).value
+        confirm = self.query_one("#new-vault-confirm-input", Input).value
+        error = self.query_one("#add-vault-error", Static)
+
+        if not name:
+            error.update("Vault name cannot be empty")
+            return
+        if not password:
+            error.update("Password cannot be empty")
+            return
+        if password != confirm:
+            error.update("Passwords do not match")
+            self.query_one("#new-vault-confirm-input", Input).clear()
+            return
+
+        self.post_message(self.VaultCreated(name=name, master_password=password))
+
+    def action_cancel(self) -> None:
+        logger.debug("AddVaultPanel cancelled")
+        self.remove()
+
+    class VaultCreated(Message):
+        """Message when a new vault should be created."""
+        def __init__(self, name: str, master_password: str) -> None:
+            self.name = name
+            self.master_password = master_password
+            super().__init__()
+
+
 class PassVaultApp(App):
     """Main PassVault TUI application."""
 
@@ -126,6 +189,7 @@ class PassVaultApp(App):
 
     BINDINGS = [
         ("slash", "select_vault", "Select a Vault (/)"),
+        ("n", "new_vault", "New Vault (N)"),
     ]
 
     def compose(self) -> ComposeResult:
@@ -143,6 +207,37 @@ class PassVaultApp(App):
         self.query_one("#vault-selector", Select).display = False
         self.query_one("#pointers-list", OptionList).display = False
     
+
+    def action_new_vault(self) -> None:
+        """Show the add vault panel."""
+        try:
+            self.query_one("#add-vault-modal", AddVaultPanel).remove()
+        except Exception:
+            pass
+        self.mount(AddVaultPanel(id="add-vault-modal"))
+
+    def on_add_vault_panel_vault_created(self, message: AddVaultPanel.VaultCreated) -> None:
+        """Create and persist the new vault, then refresh the vault selector."""
+        name = message.name
+        if name in Vault.list_vaults():
+            self.app.notify(f"Vault '{name}' already exists", severity="warning")
+            return
+        try:
+            new_vault = Vault(id=name, load=False)
+            new_vault.update_vault()
+            logger.info(f"Created vault '{name}'")
+            try:
+                self.query_one("#add-vault-modal", AddVaultPanel).remove()
+            except Exception:
+                pass
+            updated = Vault.list_vaults()
+            self.query_one("#vault-selector", Select).set_options(
+                (vault_id, vault_id) for vault_id in updated
+            )
+            self.app.notify(f"Vault '{name}' created")
+        except Exception as e:
+            logger.error(f"Failed to create vault: {e}")
+            self.app.notify(f"Failed to create vault: {e}", severity="error")
 
     def action_select_vault(self) -> None:
         """Show the Select widget and focus it."""
