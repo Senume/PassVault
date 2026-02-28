@@ -5,6 +5,9 @@ from textual.containers import Vertical, Horizontal
 from textual.widgets import Header, Footer, Label, Button, Select, OptionList, Static, Input, Rule
 from textual.message import Message
 from textual.widgets. option_list import Option
+from textual import work
+
+import httpx
 
 from passvault_core.clipboard import get_clipboard_manager
 from passvault_core.storage import Vault
@@ -199,6 +202,7 @@ class AddCredentialPanel(Vertical):
     BINDINGS = [
         ("escape", "cancel_add", "Cancel"),
         ("enter", "confirm_add", "Add"),
+        ("ctrl+g", "generate_password", "Generate Password (Ctrl+G)"),
     ]
     
     def compose(self) -> ComposeResult:
@@ -210,6 +214,7 @@ class AddCredentialPanel(Vertical):
             yield Input(id="new-username-input", placeholder="Enter username")
             yield Label("Password:", id="password-label")
             yield Input(id="new-password-input", placeholder="Enter password", password=True)
+            yield Static("\[[bold cyan]Ctrl+G[/]] Auto-generate password", id="generate-hint")
             yield Static("", id="add-credential-error")
 
     def on_mount(self) -> None:
@@ -226,6 +231,28 @@ class AddCredentialPanel(Vertical):
         elif event.control.id == "new-password-input":
             logger.debug("Password input submitted via Enter")
             self.action_confirm_add()
+
+    @work(exclusive=True)
+    async def action_generate_password(self) -> None:
+        """Fetch a random password from the public API and fill the password field."""
+        self.app.notify("Generating password…", timeout=2)
+        url = "https://api.genratr.com/?length=20&uppercase&lowercase&numbers&special"
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.get(url)
+                resp.raise_for_status()
+                data = resp.json()
+            generated = data.get("password", "")
+            if not generated:
+                raise ValueError("Empty response from API")
+            password_input = self.query_one("#new-password-input", Input)
+            password_input.value = generated
+            password_input.focus()
+            self.app.notify("Password generated! ✓")
+            logger.info("Password auto-generated via API")
+        except Exception as e:
+            logger.error(f"Password generation failed: {e}")
+            self.app.notify(f"Generation failed: {e}", severity="error")
 
     def action_cancel_add(self) -> None:
         """Cancel adding credential."""
