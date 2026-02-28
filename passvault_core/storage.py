@@ -2,8 +2,28 @@ import os
 import json
 import base64
 import tempfile
+from pathlib import Path
 from passvault_core.crypto import derive_key, encrypt, decrypt
 from passvault_core.schema import VaultSchema, KDFParamsSchema, PointerSchema, CredentialSchema
+
+_SYSTEM_VAULT_DIR = "/etc/passvault/vaults"
+_USER_VAULT_DIR = str(Path.home() / ".local" / "share" / "passvault" / "vaults")
+
+
+def _resolve_vault_path() -> str:
+    """Return vault dir: env var → /etc/passvault/vaults (if writable) → ~/.local/share fallback."""
+    env = os.getenv("PASSVAULT")
+    if env:
+        return env
+    try:
+        os.makedirs(_SYSTEM_VAULT_DIR, exist_ok=True)
+        # Verify we can actually write there
+        test = os.path.join(_SYSTEM_VAULT_DIR, ".write_test")
+        open(test, "w").close()
+        os.remove(test)
+        return _SYSTEM_VAULT_DIR
+    except (PermissionError, OSError):
+        return _USER_VAULT_DIR
 
 
 def encode_string_to_base64_bytes(s: str) -> bytes:
@@ -18,7 +38,7 @@ def decode_base64_bytes_to_string(b: bytes) -> str:
 
 class Vault:
 
-    path = os.getenv("PASSVAULT", "data")
+    path = _resolve_vault_path()
 
     def __init__(self, id: str, TIME: int = None, MEMORY: int = None, PARALLELISM: int = None, load: bool = True):
         vault_config: VaultSchema = VaultSchema(id=id, salt=os.urandom(32))
