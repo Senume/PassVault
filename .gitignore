@@ -3,6 +3,7 @@
 data/
 logs/
 references/
+exports/
 #logs
 *.log
 
