@@ -154,7 +154,7 @@ Screen {
     background: $boost;
     layer: overlay;
     width: 60;
-    height: 20;
+    height: 22;
     padding: 1 2;
 }
 
@@ -196,6 +196,12 @@ Screen {
     color: $error;
     text-style: bold;
     margin-top: 1;
+}
+
+#generate-hint {
+    color: $text-muted;
+    margin-top: 0;
+    height: 1;
 }
 
 #add-vault-modal {
