@@ -1,0 +1,4 @@
+include passvault_tui/style.css
+recursive-include passvault_tui/widgets *.py
+recursive-include passvault_core *.py
+recursive-include utils *.py
