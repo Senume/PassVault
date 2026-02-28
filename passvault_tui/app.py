@@ -1,419 +1,25 @@
-"""Main TUI application using Textual."""
+"""Main TUI application — PassVaultApp and entry point."""
 
 import os
-import zipfile
 import shutil
+
 from textual.app import ComposeResult, App
-from textual.containers import Vertical, Horizontal
-from textual.widgets import Header, Footer, Label, Button, Select, OptionList, Static, Input, Rule
-from textual.message import Message
-from textual.widgets. option_list import Option
-from textual import work
+from textual.widgets import Header, Footer, Select, OptionList, Input, Static
+from textual.widgets.option_list import Option
 
-import httpx
-
-from passvault_core.clipboard import get_clipboard_manager, ClipboardManager
+from passvault_core.clipboard import ClipboardManager
 from passvault_core.storage import Vault
 from utils import logger
 
-class CredentialPanel(Vertical):
-    """Panel to display credential details - uses Vertical for focusability."""
-    
-    # Ensure the container can receive focus
-    can_focus = True
-    
-    BINDINGS = [
-        ("escape", "close_panel", "Close"),
-        ("c", "copy_credentials", "Copy Username"),
-        ("p", "copy_password", "Copy Password"),
-    ]
-
-    def __init__(self, username: str = "", password: str = "", pointer_id: str = "", **kwargs):
-        super().__init__(**kwargs)
-        self.username = username
-        self.password = password
-        self.pointer_id = pointer_id
-    def on_mount(self) -> None:
-        """Update display with data on mount."""
-
-        # Set focus on the panel so key bindings work
-        self.focus()
-        logger.debug("Credential panel mounted and focused")
-
-    
-    def compose(self) -> ComposeResult:
-        yield Label("🔓 Credential Unlocked", id="credential-label")
-        yield Label(self.pointer_id, id="pointer-label")
-        yield Rule(id="credential-rule")
-        yield Label("Username", classes="credential-field-label")
-        yield Label(self.username, classes="credential-field-value")
-        yield Label("Password", classes="credential-field-label")
-        yield Label("●" * len(self.password), classes="credential-field-value", id="password-display")
-        yield Rule(id="credential-rule-bottom")
-        yield Label(
-            "\\[[bold cyan]c[/]] Copy Username  "
-            "\\[[bold cyan]p[/]] Copy Password  "
-            "\\[[bold cyan]ESC[/]] Close",
-            id="credential-help",
-        )
-
-    def action_close_panel(self) -> None:
-        """Close the credential panel."""
-        logger.debug("action_close_panel called")
-        self.post_message(self.CredentialClosed())
-
-    def action_copy_credentials(self) -> None:
-        """Copy username to clipboard."""
-        logger.debug("action_copy_credentials called")
-        try:
-            clipboard_manager = get_clipboard_manager()
-            clipboard_manager.copy(self.username)
-            logger.info(f"Copied username to clipboard")
-            self.app.notify("Username copied to clipboard")
-        except Exception as e:
-            logger.error(f"Failed to copy username: {e}")
-            self.app.notify(f"Failed to copy: {e}", severity="error")
-
-    def action_copy_password(self) -> None:
-        """Copy password to clipboard."""
-        logger.debug("action_copy_password called")
-        try:
-            clipboard_manager = get_clipboard_manager()
-            clipboard_manager.copy(self.password)
-            logger.info(f"Copied password to clipboard")
-            self.app.notify("Password copied to clipboard")
-        except Exception as e:
-            logger.error(f"Failed to copy password:  {e}")
-            self.app.notify(f"Failed to copy: {e}", severity="error")
-
-    class CredentialClosed(Message):
-        """Message when credential panel is closed."""
-        pass
-
-class MasterPasswordPanel(Static):
-    """Modal panel for entering master password."""
-    
-    BINDINGS = [
-        ("escape", "cancel_password", "Cancel"),
-    ]
-    
-    def compose(self) -> ComposeResult:
-        with Vertical(id="password-panel"):
-            yield Label("Enter Master Password", id="password-label")
-            yield Input(id="master-password-input", password=True)
-            yield Static("", id="password-error")
-
-    def on_mount(self) -> None:
-        """Focus on password input when panel mounts."""
-        password_input = self.query_one("#master-password-input", Input)
-        self.app.set_focus(password_input)
-        logger.debug("Master password panel mounted, input focused.")
-
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        """Handle input submission (Enter key)."""
-        if event.control.id == "master-password-input":
-            logger.debug("Input submitted via Enter")
-            password = event.value
-            logger.debug(f"Password entered: {len(password)} chars")
-            if not password:
-                self.query_one("#password-error", Static).update("Password cannot be empty")
-                return
-            self.post_message(self.PasswordConfirmed(password))
-
-    def action_cancel_password(self) -> None:
-        """Cancel password entry."""
-        self.post_message(self. PasswordCancelled())
-
-    class PasswordConfirmed(Message):
-        """Message when password is confirmed."""
-        def __init__(self, password: str) -> None:
-            self.password = password
-            super().__init__()
-
-    class PasswordCancelled(Message):
-        """Message when password entry is cancelled."""
-        pass
-
-class AddVaultPanel(Vertical):
-    """Panel for creating a new vault with master password confirmation."""
-
-    can_focus = True
-
-    BINDINGS = [
-        ("escape", "cancel", "Cancel"),
-    ]
-
-    def compose(self) -> ComposeResult:
-        with Vertical(id="add-vault-inner"):
-            yield Label("Create New Vault", id="add-vault-label")
-            yield Label("Vault Name:", id="vault-name-label")
-            yield Input(id="new-vault-name-input", placeholder="Enter vault name")
-            yield Label("Master Password:", id="vault-master-password-label")
-            yield Input(id="new-vault-password-input", placeholder="Enter master password", password=True)
-            yield Label("Confirm Password:", id="vault-confirm-label")
-            yield Input(id="new-vault-confirm-input", placeholder="Confirm master password", password=True)
-            yield Static("", id="add-vault-error")
-
-    def on_mount(self) -> None:
-        self.query_one("#new-vault-name-input", Input).focus()
-        logger.debug("AddVaultPanel mounted")
-
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        if event.control.id == "new-vault-name-input":
-            self.query_one("#new-vault-password-input", Input).focus()
-        elif event.control.id == "new-vault-password-input":
-            self.query_one("#new-vault-confirm-input", Input).focus()
-        elif event.control.id == "new-vault-confirm-input":
-            self._submit()
-
-    def _submit(self) -> None:
-        name = self.query_one("#new-vault-name-input", Input).value.strip()
-        password = self.query_one("#new-vault-password-input", Input).value
-        confirm = self.query_one("#new-vault-confirm-input", Input).value
-        error = self.query_one("#add-vault-error", Static)
-
-        if not name:
-            error.update("Vault name cannot be empty")
-            return
-        if not password:
-            error.update("Password cannot be empty")
-            return
-        if password != confirm:
-            error.update("Passwords do not match")
-            self.query_one("#new-vault-confirm-input", Input).clear()
-            return
-
-        self.post_message(self.VaultCreated(name=name, master_password=password))
-
-    def action_cancel(self) -> None:
-        logger.debug("AddVaultPanel cancelled")
-        self.remove()
-
-    class VaultCreated(Message):
-        """Message when a new vault should be created."""
-        def __init__(self, name: str, master_password: str) -> None:
-            self.name = name
-            self.master_password = master_password
-            super().__init__()
-
-
-class AddCredentialPanel(Vertical):
-    """Panel for adding new credentials."""
-    
-    can_focus = True
-    
-    BINDINGS = [
-        ("escape", "cancel_add", "Cancel"),
-        ("enter", "confirm_add", "Add"),
-        ("ctrl+g", "generate_password", "Generate Password (Ctrl+G)"),
-    ]
-    
-    def compose(self) -> ComposeResult:
-        with Vertical(id="add-credential-panel"):
-            yield Label("Add New Credential", id="add-credential-label")
-            yield Label("Name:", id="name-label")
-            yield Input(id="new-name-input", placeholder="e.g. github, work-email")
-            yield Label("Username:", id="username-label")
-            yield Input(id="new-username-input", placeholder="Enter username")
-            yield Label("Password:", id="password-label")
-            yield Input(id="new-password-input", placeholder="Enter password", password=True)
-            yield Static("\[[bold cyan]Ctrl+G[/]] Auto-generate password", id="generate-hint")
-            yield Static("", id="add-credential-error")
-
-    def on_mount(self) -> None:
-        """Focus on name input when panel mounts."""
-        self.app.set_focus(self.query_one("#new-name-input", Input))
-        logger.debug("Add credential panel mounted, name input focused.")
-
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        """Handle input submission (Enter key)."""
-        if event.control.id == "new-name-input":
-            self.query_one("#new-username-input", Input).focus()
-        elif event.control.id == "new-username-input":
-            self.query_one("#new-password-input", Input).focus()
-        elif event.control.id == "new-password-input":
-            logger.debug("Password input submitted via Enter")
-            self.action_confirm_add()
-
-    @work(exclusive=True)
-    async def action_generate_password(self) -> None:
-        """Fetch a random password from the public API and fill the password field."""
-        self.app.notify("Generating password…", timeout=2)
-        url = "https://api.genratr.com/?length=20&uppercase&lowercase&numbers&special"
-        try:
-            async with httpx.AsyncClient(timeout=5.0) as client:
-                resp = await client.get(url)
-                resp.raise_for_status()
-                data = resp.json()
-            generated = data.get("password", "")
-            if not generated:
-                raise ValueError("Empty response from API")
-            password_input = self.query_one("#new-password-input", Input)
-            password_input.value = generated
-            password_input.focus()
-            self.app.notify("Password generated! ✓")
-            logger.info("Password auto-generated via API")
-        except Exception as e:
-            logger.error(f"Password generation failed: {e}")
-            self.app.notify(f"Generation failed: {e}", severity="error")
-
-    def action_cancel_add(self) -> None:
-        """Cancel adding credential."""
-        logger.debug("action_cancel_add called")
-        # Re-enable the OptionList before removing
-        try:
-            pointers_list = self.app.query_one("#pointers-list", OptionList)
-            pointers_list.disabled = False
-            self.app.set_focus(pointers_list)
-        except:
-            pass
-        self.remove()
-
-    def action_confirm_add(self) -> None:
-        """Confirm adding new credential."""
-        logger.debug("action_confirm_add called")
-        name = self.query_one("#new-name-input", Input).value.strip()
-        username = self.query_one("#new-username-input", Input).value
-        password = self.query_one("#new-password-input", Input).value
-
-        error_label = self.query_one("#add-credential-error", Static)
-        if not name:
-            error_label.update("Name cannot be empty")
-            self.query_one("#new-name-input", Input).focus()
-            return
-        if not username or not password:
-            error_label.update("Username and password cannot be empty")
-            logger.warning("Empty username or password")
-            return
-
-        try:
-            self.post_message(self.CredentialAdded(name=name, username=username, password=password))
-            logger.info(f"New credential added: {name}")
-            try:
-                self.app.query_one("#pointers-list", OptionList).disabled = False
-            except Exception:
-                pass
-            self.remove()
-        except Exception as e:
-            logger.error(f"Failed to add credential: {e}")
-            error_label.update(f"Error: {str(e)}")
-
-    class CredentialAdded(Message):
-        """Message when credential is added."""
-        def __init__(self, name: str, username: str, password: str) -> None:
-            self.name = name
-            self.username = username
-            self.password = password
-            super().__init__()
-
-
-class ExportVaultPanel(Vertical):
-    """Panel to export the current vault as an encrypted zip archive."""
-
-    can_focus = True
-
-    BINDINGS = [("escape", "cancel", "Cancel")]
-
-    def __init__(self, vault_id: str, vault_path: str, **kwargs):
-        self.vault_id = vault_id
-        self.vault_path = vault_path
-        super().__init__(**kwargs)
-
-    def compose(self) -> ComposeResult:
-        default_dest = os.path.join(os.path.expanduser("~"), "PassVault_exports", f"{self.vault_id}.pvault")
-        with Vertical(id="export-vault-inner"):
-            yield Label("Export Vault", id="export-vault-label")
-            yield Label(f"Vault: [bold]{self.vault_id}[/bold]", id="export-vault-name")
-            yield Label("Export path:", id="export-path-label")
-            yield Input(id="export-path-input", value=default_dest)
-            yield Static("", id="export-vault-error")
-            yield Static("\[[bold cyan]Enter[/]] Export  \[[bold cyan]Esc[/]] Cancel", id="export-vault-hint")
-
-    def on_mount(self) -> None:
-        self.query_one("#export-path-input", Input).focus()
-
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        self._do_export()
-
-    def _do_export(self) -> None:
-        dest = self.query_one("#export-path-input", Input).value.strip()
-        error = self.query_one("#export-vault-error", Static)
-        if not dest:
-            error.update("Export path cannot be empty")
-            return
-        try:
-            os.makedirs(os.path.dirname(dest), exist_ok=True)
-            with zipfile.ZipFile(dest, "w", zipfile.ZIP_DEFLATED) as zf:
-                for fname in os.listdir(self.vault_path):
-                    zf.write(os.path.join(self.vault_path, fname), arcname=os.path.join(self.vault_id, fname))
-            logger.info(f"Vault '{self.vault_id}' exported to {dest}")
-            self.post_message(self.ExportDone(dest=dest))
-        except Exception as e:
-            logger.error(f"Export failed: {e}")
-            error.update(f"Export failed: {e}")
-
-    def action_cancel(self) -> None:
-        self.remove()
-
-    class ExportDone(Message):
-        def __init__(self, dest: str) -> None:
-            self.dest = dest
-            super().__init__()
-
-
-class ImportVaultPanel(Vertical):
-    """Panel to import a vault from a .pvault zip archive."""
-
-    can_focus = True
-
-    BINDINGS = [("escape", "cancel", "Cancel")]
-
-    def compose(self) -> ComposeResult:
-        with Vertical(id="import-vault-inner"):
-            yield Label("Import Vault", id="import-vault-label")
-            yield Label("Path to .pvault file:", id="import-path-label")
-            yield Input(id="import-path-input", placeholder="e.g. ~/PassVault_exports/myvault.pvault")
-            yield Static("", id="import-vault-error")
-            yield Static("\[[bold cyan]Enter[/]] Import  \[[bold cyan]Esc[/]] Cancel", id="import-vault-hint")
-
-    def on_mount(self) -> None:
-        self.query_one("#import-path-input", Input).focus()
-
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        self._do_import()
-
-    def _do_import(self) -> None:
-        src = os.path.expanduser(self.query_one("#import-path-input", Input).value.strip())
-        error = self.query_one("#import-vault-error", Static)
-        if not src:
-            error.update("File path cannot be empty")
-            return
-        if not os.path.isfile(src):
-            error.update(f"File not found: {src}")
-            return
-        try:
-            with zipfile.ZipFile(src, "r") as zf:
-                # Determine vault_id from the top-level directory inside the zip
-                names = zf.namelist()
-                vault_id = names[0].split("/")[0]
-                dest_dir = os.path.join(Vault.path, vault_id)
-                if os.path.exists(dest_dir):
-                    error.update(f"Vault '{vault_id}' already exists")
-                    return
-                zf.extractall(Vault.path)
-            logger.info(f"Vault '{vault_id}' imported from {src}")
-            self.post_message(self.ImportDone(vault_id=vault_id))
-        except Exception as e:
-            logger.error(f"Import failed: {e}")
-            error.update(f"Import failed: {e}")
-
-    def action_cancel(self) -> None:
-        self.remove()
-
-    class ImportDone(Message):
-        def __init__(self, vault_id: str) -> None:
-            self.vault_id = vault_id
-            super().__init__()
+from passvault_tui.widgets import (
+    CredentialPanel,
+    MasterPasswordPanel,
+    AddVaultPanel,
+    AddCredentialPanel,
+    ExportVaultPanel,
+    ImportVaultPanel,
+    DeleteVaultPanel,
+)
 
 
 class PassVaultApp(App):
@@ -422,7 +28,7 @@ class PassVaultApp(App):
     TITLE = "🔐 PassVault"
     SUB_TITLE = "A Simple TUI Password Manager"
     CSS_PATH = "style.css"
-    
+
     vaults_list = Vault.list_vaults()
     current_vault = None
     pending_credential = None
@@ -435,28 +41,29 @@ class PassVaultApp(App):
         ("f", "focus_search", "Search (F)"),
         ("e", "export_vault", "Export Vault (E)"),
         ("i", "import_vault", "Import Vault (I)"),
+        ("ctrl+d", "delete_vault", "Delete Vault (Ctrl+D)"),
     ]
 
+    # ── Layout ────────────────────────────────────────────────────
+
     def compose(self) -> ComposeResult:
-        """Compose the main layout."""
         yield Header()
         yield Select(
             options=[(vault_id, vault_id) for vault_id in self.vaults_list],
-            id="vault-selector"
+            id="vault-selector",
         )
         yield Input(placeholder="🔍 Search credentials...", id="search-input")
         yield OptionList(id="pointers-list")
         yield Footer()
 
     def on_mount(self) -> None:
-        """Hide widgets on startup."""
         self.query_one("#vault-selector", Select).display = False
         self.query_one("#search-input", Input).display = False
         self.query_one("#pointers-list", OptionList).display = False
-    
+
+    # ── Vault actions ─────────────────────────────────────────────
 
     def action_new_vault(self) -> None:
-        """Show the add vault panel."""
         try:
             self.query_one("#add-vault-modal", AddVaultPanel).remove()
         except Exception:
@@ -464,7 +71,6 @@ class PassVaultApp(App):
         self.mount(AddVaultPanel(id="add-vault-modal"))
 
     def action_export_vault(self) -> None:
-        """Export the currently loaded vault as an encrypted zip archive."""
         if self.current_vault is None:
             self.notify("Select a vault first", severity="warning")
             return
@@ -476,41 +82,56 @@ class PassVaultApp(App):
             pass
         self.mount(ExportVaultPanel(vault_id=vault_id, vault_path=vault_path, id="export-vault-modal"))
 
-    def on_export_vault_panel_export_done(self, message: ExportVaultPanel.ExportDone) -> None:
-        try:
-            self.query_one("#export-vault-modal", ExportVaultPanel).remove()
-        except Exception:
-            pass
-        self.notify(f"Vault exported → {message.dest}")
-
     def action_import_vault(self) -> None:
-        """Import a vault from a .pvault zip archive."""
         try:
             self.query_one("#import-vault-modal", ImportVaultPanel).remove()
         except Exception:
             pass
         self.mount(ImportVaultPanel(id="import-vault-modal"))
 
-    def on_import_vault_panel_import_done(self, message: ImportVaultPanel.ImportDone) -> None:
+    def action_delete_vault(self) -> None:
+        if self.current_vault is None:
+            self.notify("Select a vault first", severity="warning")
+            return
+        vault_id = self.current_vault.vault_config.id
         try:
-            self.query_one("#import-vault-modal", ImportVaultPanel).remove()
+            self.query_one("#delete-vault-modal", DeleteVaultPanel).remove()
         except Exception:
             pass
-        updated = Vault.list_vaults()
-        self.query_one("#vault-selector", Select).set_options(
-            (v, v) for v in updated
-        )
-        self.notify(f"Vault '{message.vault_id}' imported ✓")
-        logger.info(f"Vault '{message.vault_id}' imported and selector refreshed")
+        self.mount(DeleteVaultPanel(vault_id=vault_id, id="delete-vault-modal"))
+
+    def action_select_vault(self) -> None:
+        select = self.query_one("#vault-selector", Select)
+        select.display = True
+        self.set_focus(select)
+
+    # ── Credential actions ────────────────────────────────────────
+
+    def action_add_credential(self) -> None:
+        logger.debug("action_add_credential called")
+        if not self.current_vault:
+            self.notify("Please select a vault first", severity="warning")
+            return
+        try:
+            pointers_list = self.query_one("#pointers-list", OptionList)
+            pointers_list.disabled = True
+        except Exception:
+            pass
+        try:
+            self.query_one("#add-credential-modal", AddCredentialPanel).remove()
+        except Exception:
+            pass
+        self.mount(AddCredentialPanel(id="add-credential-modal"))
 
     def action_focus_search(self) -> None:
-        """Focus the search input if a vault is loaded."""
         search = self.query_one("#search-input", Input)
         if search.display:
             self.set_focus(search)
 
+    # ── Event handlers ────────────────────────────────────────────
+
     def on_key(self, event) -> None:
-        """Handle global key events: paste (Ctrl+V) and Escape."""
+        """Global key handler: Ctrl+V paste and Escape."""
         if event.key == "ctrl+v":
             focused = self.focused
             if isinstance(focused, Input):
@@ -524,7 +145,6 @@ class PassVaultApp(App):
             return
 
         if event.key == "escape":
-            # Hide vault selector if it is visible
             try:
                 selector = self.query_one("#vault-selector", Select)
                 if selector.display:
@@ -534,7 +154,6 @@ class PassVaultApp(App):
                     return
             except Exception:
                 pass
-            # Clear search and return to list
             try:
                 search = self.query_one("#search-input", Input)
                 if self.focused is search:
@@ -544,17 +163,7 @@ class PassVaultApp(App):
             except Exception:
                 pass
 
-    def _restore_main_focus(self) -> None:
-        """Return focus to the credentials list when a vault is loaded."""
-        try:
-            pointers_list = self.query_one("#pointers-list", OptionList)
-            if pointers_list.display:
-                self.set_focus(pointers_list)
-        except Exception:
-            pass
-
     def on_input_changed(self, event: Input.Changed) -> None:
-        """Filter the credentials list as the user types in the search box."""
         if event.control.id != "search-input":
             return
         query = event.value.strip().lower()
@@ -567,58 +176,17 @@ class PassVaultApp(App):
         for pointer in matches:
             pointers_list.add_option(Option(pointer, id=pointer))
 
-    def on_add_vault_panel_vault_created(self, message: AddVaultPanel.VaultCreated) -> None:
-        """Create and persist the new vault, then refresh the vault selector."""
-        name = message.name
-        if name in Vault.list_vaults():
-            try:
-                self.query_one("#add-vault-error", Static).update(f"Vault '{name}' already exists")
-            except Exception:
-                self.app.notify(f"Vault '{name}' already exists", severity="warning")
-            return
-
-        try:
-            new_vault = Vault(id=name, load=False)
-            new_vault.update_vault()
-            logger.info(f"Created vault '{name}'")
-
-            # Dismiss the panel and refresh the selector
-            try:
-                self.query_one("#add-vault-modal", AddVaultPanel).remove()
-            except Exception:
-                pass
-
-            updated = Vault.list_vaults()
-            self.query_one("#vault-selector", Select).set_options(
-                (vault_id, vault_id) for vault_id in updated
-            )
-            self.app.notify(f"Vault '{name}' created")
-        except Exception as e:
-            logger.error(f"Failed to create vault: {e}")
-            self.app.notify(f"Failed to create vault: {e}", severity="error")
-
-    def action_select_vault(self) -> None:
-        """Show the vault selector as an overlay."""
-        select = self.query_one("#vault-selector", Select)
-        select.display = True
-        self.set_focus(select)
-
     def on_select_changed(self, event: Select.Changed) -> None:
-        """Handle vault selection — only reload if the vault actually changed."""
         if event.control.id != "vault-selector":
             return
-
         selector = self.query_one("#vault-selector", Select)
         selector.display = False
 
         selected_id = str(event.value)
-
-        # Same vault — keep the credentials list as-is
         if self.current_vault and self.current_vault.vault_config.id == selected_id:
             self._restore_main_focus()
             return
 
-        # New vault selected — reload credentials
         self.sub_title = f"Selected Vault: {selected_id}"
         self.current_vault = Vault(id=selected_id)
         pointers = self.current_vault.list_pointers()
@@ -635,32 +203,17 @@ class PassVaultApp(App):
         pointers_list.display = True
         self.set_focus(pointers_list)
 
-    def action_add_credential(self) -> None:
-        """Show the add credential panel."""
-        logger.debug("action_add_credential called")
-        if not self.current_vault:
-            self.app.notify("Please select a vault first", severity="warning")
-            return
-        
-        # Disable the OptionList
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        self.selected_pointer = event.option.id
+        pointers_list = self.query_one("#pointers-list", OptionList)
+        pointers_list.disabled = True
         try:
-            pointers_list = self.query_one("#pointers-list", OptionList)
-            pointers_list.disabled = True
-        except:
+            self.query_one("#password-modal", MasterPasswordPanel).remove()
+        except Exception:
             pass
-        
-        # Remove existing add credential panel if present
-        try:
-            self.query_one("#add-credential-modal", AddCredentialPanel).remove()
-        except:
-            pass
-        
-        # Mount new panel
-        self.mount(AddCredentialPanel(id="add-credential-modal"))
+        self.mount(MasterPasswordPanel(id="password-modal"))
 
-    def on_master_password_panel_password_confirmed(self, message:  MasterPasswordPanel.PasswordConfirmed) -> None:
-        """Handle password confirmation."""
-        # Determine which flow sent this message
+    def on_master_password_panel_password_confirmed(self, message: MasterPasswordPanel.PasswordConfirmed) -> None:
         add_modal = None
         try:
             add_modal = self.query_one("#master-password-for-add-modal", MasterPasswordPanel)
@@ -668,14 +221,13 @@ class PassVaultApp(App):
             pass
 
         if add_modal is not None:
-            # --- Add credential flow ---
             pointer_id = self.pending_credential['name']
             try:
                 self.current_vault.updated_pointer(
                     master_password=message.password,
                     pointer_id=pointer_id,
                     username=self.pending_credential['username'],
-                    password=self.pending_credential['password']
+                    password=self.pending_credential['password'],
                 )
                 self.current_vault.update_vault()
             except Exception as e:
@@ -683,15 +235,14 @@ class PassVaultApp(App):
                 try:
                     add_modal.query_one("#password-error", Static).update("Failed to add credential")
                 except Exception:
-                    self.app.notify(f"Error: {e}", severity="error")
+                    self.notify(f"Error: {e}", severity="error")
                 return
 
-            self.app.notify(f"Credential '{self.pending_credential['name']}' added successfully")
+            self.notify(f"Credential '{self.pending_credential['name']}' added successfully")
             add_modal.remove()
 
             pointers = self.current_vault.list_pointers()
             self.all_pointers = pointers
-            # Clear search so the new credential is visible
             try:
                 self.query_one("#search-input", Input).clear()
             except Exception:
@@ -704,7 +255,7 @@ class PassVaultApp(App):
             self.set_focus(pointers_list)
             return
 
-        # --- Retrieve credential flow ---
+        # Retrieve credential flow
         try:
             credential = self.current_vault.get_pointer(message.password, self.selected_pointer)
             logger.debug(f"Retrieved credential for pointer {self.selected_pointer}")
@@ -713,18 +264,19 @@ class PassVaultApp(App):
                 username=credential.username,
                 password=credential.password,
                 pointer_id=self.selected_pointer,
-                id="credential-modal"
+                id="credential-modal",
             ))
         except Exception as e:
             logger.error(f"Failed: {e}")
-            self.app.notify("Wrong password", severity="error")
+            self.notify("Wrong password", severity="error")
             try:
-                self.query_one("#password-modal", MasterPasswordPanel).query_one("#password-error", Static).update("Wrong password")
+                self.query_one("#password-modal", MasterPasswordPanel).query_one(
+                    "#password-error", Static
+                ).update("Wrong password")
             except Exception:
                 pass
 
     def on_master_password_panel_password_cancelled(self, message: MasterPasswordPanel.PasswordCancelled) -> None:
-        """Handle password cancellation."""
         for modal_id in ("#master-password-for-add-modal", "#password-modal"):
             try:
                 self.query_one(modal_id, MasterPasswordPanel).remove()
@@ -735,53 +287,107 @@ class PassVaultApp(App):
         pointers_list.disabled = False
         self.set_focus(pointers_list)
 
-    def on_credential_panel_credential_closed(self, message: CredentialPanel. CredentialClosed) -> None:
-        """Handle credential closure."""
+    def on_credential_panel_credential_closed(self, message: CredentialPanel.CredentialClosed) -> None:
         logger.debug("Credential panel close message received")
         self.query_one("#credential-modal", CredentialPanel).remove()
-        # Re-enable the OptionList
         self.query_one("#pointers-list", OptionList).disabled = False
         self.set_focus(self.query_one("#pointers-list", OptionList))
 
-    def on_option_list_option_selected(self, event: OptionList. OptionSelected) -> None:
-        """Handle pointer selection and show master password panel."""
-        self.selected_pointer = event.option.id
-        
-        # Disable the OptionList
-        pointers_list = self.query_one("#pointers-list", OptionList)
-        pointers_list.disabled = True
-        
-        # Remove existing modal if present
-        try: 
-            self.query_one("#password-modal", MasterPasswordPanel).remove()
-        except:
-            pass
-        
-        # Mount new modal
-        self.mount(MasterPasswordPanel(id="password-modal"))
+    def on_add_vault_panel_vault_created(self, message: AddVaultPanel.VaultCreated) -> None:
+        name = message.name
+        if name in Vault.list_vaults():
+            try:
+                self.query_one("#add-vault-error", Static).update(f"Vault '{name}' already exists")
+            except Exception:
+                self.notify(f"Vault '{name}' already exists", severity="warning")
+            return
+        try:
+            new_vault = Vault(id=name, load=False)
+            new_vault.update_vault()
+            logger.info(f"Created vault '{name}'")
+            try:
+                self.query_one("#add-vault-modal", AddVaultPanel).remove()
+            except Exception:
+                pass
+            updated = Vault.list_vaults()
+            self.query_one("#vault-selector", Select).set_options(
+                (vault_id, vault_id) for vault_id in updated
+            )
+            self.notify(f"Vault '{name}' created")
+        except Exception as e:
+            logger.error(f"Failed to create vault: {e}")
+            self.notify(f"Failed to create vault: {e}", severity="error")
 
     def on_add_credential_panel_credential_added(self, message: AddCredentialPanel.CredentialAdded) -> None:
-        """Handle new credential addition - show master password panel first."""
         logger.debug(f"Credential to add: {message.username}")
-
         self.pending_credential = {
             'name': message.name,
             'username': message.username,
-            'password': message.password
+            'password': message.password,
         }
-
-        # Keep the OptionList disabled while the master password prompt is shown
         try:
             self.query_one("#pointers-list", OptionList).disabled = True
         except Exception:
             pass
-
         try:
             self.query_one("#master-password-for-add-modal", MasterPasswordPanel).remove()
         except Exception:
             pass
-
         self.mount(MasterPasswordPanel(id="master-password-for-add-modal"))
+
+    def on_export_vault_panel_export_done(self, message: ExportVaultPanel.ExportDone) -> None:
+        try:
+            self.query_one("#export-vault-modal", ExportVaultPanel).remove()
+        except Exception:
+            pass
+        self.notify(f"Vault exported → {message.dest}")
+
+    def on_import_vault_panel_import_done(self, message: ImportVaultPanel.ImportDone) -> None:
+        try:
+            self.query_one("#import-vault-modal", ImportVaultPanel).remove()
+        except Exception:
+            pass
+        updated = Vault.list_vaults()
+        self.query_one("#vault-selector", Select).set_options((v, v) for v in updated)
+        self.notify(f"Vault '{message.vault_id}' imported ✓")
+        logger.info(f"Vault '{message.vault_id}' imported and selector refreshed")
+
+    def on_delete_vault_panel_delete_confirmed(self, message: DeleteVaultPanel.DeleteConfirmed) -> None:
+        vault_id = message.vault_id
+        vault_path = os.path.join(Vault.path, vault_id)
+        try:
+            shutil.rmtree(vault_path)
+            logger.info(f"Vault '{vault_id}' deleted")
+        except Exception as e:
+            logger.error(f"Failed to delete vault: {e}")
+            self.notify(f"Failed to delete vault: {e}", severity="error")
+            return
+
+        # Reset app state
+        self.current_vault = None
+        self.all_pointers = []
+        self.sub_title = "A Simple TUI Password Manager"
+        try:
+            self.query_one("#delete-vault-modal", DeleteVaultPanel).remove()
+        except Exception:
+            pass
+        self.query_one("#search-input", Input).display = False
+        self.query_one("#pointers-list", OptionList).display = False
+
+        updated = Vault.list_vaults()
+        self.query_one("#vault-selector", Select).set_options((v, v) for v in updated)
+        self.notify(f"Vault '{vault_id}' deleted")
+
+    # ── Helpers ───────────────────────────────────────────────────
+
+    def _restore_main_focus(self) -> None:
+        try:
+            pointers_list = self.query_one("#pointers-list", OptionList)
+            if pointers_list.display:
+                self.set_focus(pointers_list)
+        except Exception:
+            pass
+
 
 def run():
     """Run the TUI application."""
